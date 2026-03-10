@@ -31,7 +31,9 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run",
+    "test": "vitest run --exclude test/effectiveness/",
+    "test:all": "vitest run",
+    "test:effectiveness": "vitest run test/effectiveness/",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
