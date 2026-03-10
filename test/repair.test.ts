@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { repairToolPairing } from "../src/repair.js";
 
 describe("Tool pairing repair", () => {
-  it("should insert synthetic result for missing toolResult", () => {
+  it("should insert synthetic result for missing toolResult right after its call", () => {
     const messages = [
       {
         role: "assistant",
@@ -15,9 +15,15 @@ describe("Tool pairing repair", () => {
     expect(stats.syntheticResultsInserted).toBe(1);
     expect(stats.repaired).toBe(true);
 
-    const synthetic = repaired.find((m) => m.role === "toolResult" && m.toolCallId === "tc_1");
-    expect(synthetic).toBeDefined();
-    expect(synthetic!.isError).toBe(true);
+    const callIndex = repaired.findIndex(
+      (m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b: any) => b.id === "tc_1"),
+    );
+    const syntheticIndex = repaired.findIndex(
+      (m) => m.role === "toolResult" && m.toolCallId === "tc_1" && m.isError === true,
+    );
+
+    expect(callIndex).toBeGreaterThanOrEqual(0);
+    expect(syntheticIndex).toBe(callIndex + 1);
   });
 
   it("should drop orphan toolResults", () => {

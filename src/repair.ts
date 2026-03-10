@@ -103,12 +103,21 @@ export function repairToolPairing<T extends MessageLike>(messages: T[]): {
 
   // Phase 1: collect all non-aborted tool calls (the only valid result anchors)
   const allCallIds = new Map<string, string | undefined>(); // id → toolName
-  const callOrder: string[] = [];
   for (const msg of messages) {
     if (msg.role !== "assistant" || isAssistantAborted(msg)) continue;
     for (const call of extractToolCalls(msg)) {
-      if (!allCallIds.has(call.id)) callOrder.push(call.id);
       allCallIds.set(call.id, call.name);
+    }
+  }
+
+  // Phase 1b: pre-scan valid tool results so we only insert synthetics
+  // for calls that truly have no real result anywhere in the transcript.
+  const callsWithRealResult = new Set<string>();
+  for (const msg of messages) {
+    if (msg.role !== "toolResult") continue;
+    const id = getResultId(msg);
+    if (id && allCallIds.has(id)) {
+      callsWithRealResult.add(id);
     }
   }
 
@@ -163,17 +172,16 @@ export function repairToolPairing<T extends MessageLike>(messages: T[]): {
           out.push(pending);
           seenResultIds.add(call.id);
           pendingResults.delete(call.id);
+          continue;
+        }
+
+        // If there is no real result anywhere, insert synthetic adjacent to the call.
+        if (!callsWithRealResult.has(call.id) && !seenResultIds.has(call.id)) {
+          out.push(makeSyntheticResult(call.id, allCallIds.get(call.id)) as T);
+          seenResultIds.add(call.id);
+          stats.syntheticResultsInserted++;
         }
       }
-    }
-  }
-
-  // Phase 3: insert synthetic results for calls that still have none.
-  for (const callId of callOrder) {
-    if (!seenResultIds.has(callId)) {
-      out.push(makeSyntheticResult(callId, allCallIds.get(callId)) as T);
-      seenResultIds.add(callId);
-      stats.syntheticResultsInserted++;
     }
   }
 
