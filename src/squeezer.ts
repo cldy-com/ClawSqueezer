@@ -235,8 +235,6 @@ export function squeeze(
 
     for (const block of msg.content as ContentBlock[]) {
       const size = blockSize(block);
-      const tokens = estimateTokens(size.toString().length > 0 ? String(size) : "");
-      const actualTokens = Math.ceil(size / 4);
 
       // Image blocks — squeeze after imageAgeTurns
       // Images can be { type: "image", data: "..." } or { type: "image", source: { data: "..." } }

@@ -79,4 +79,51 @@ describe("Tool pairing repair", () => {
     const { stats } = repairToolPairing(messages);
     expect(stats.syntheticResultsInserted).toBe(0);
   });
+
+  it("should move out-of-order toolResults to after matching toolCall", () => {
+    const earlyResult = {
+      role: "toolResult",
+      toolCallId: "tc_1",
+      content: [{ type: "text", text: "done" }],
+    };
+
+    const messages = [
+      { role: "user", content: "do x" },
+      earlyResult,
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc_1", name: "exec", input: { command: "echo hi" } }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    ];
+
+    const { messages: repaired, stats } = repairToolPairing(messages);
+    expect(stats.repaired).toBe(true);
+
+    const callIndex = repaired.findIndex(
+      (m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b: any) => b.id === "tc_1"),
+    );
+    const resultIndex = repaired.findIndex(
+      (m) => m.role === "toolResult" && m.toolCallId === "tc_1",
+    );
+
+    expect(callIndex).toBeGreaterThanOrEqual(0);
+    expect(resultIndex).toBeGreaterThan(callIndex);
+  });
+
+  it("should drop toolResults for aborted assistant toolCalls", () => {
+    const messages = [
+      {
+        role: "assistant",
+        stopReason: "aborted",
+        content: [{ type: "toolCall", id: "tc_abort", name: "exec", input: { command: "sleep 10" } }],
+      },
+      { role: "toolResult", toolCallId: "tc_abort", content: [{ type: "text", text: "late" }] },
+      { role: "user", content: "retry" },
+    ];
+
+    const { messages: repaired, stats } = repairToolPairing(messages);
+    expect(stats.orphanResultsDropped).toBe(1);
+    expect(repaired.some((m) => m.role === "toolResult" && m.toolCallId === "tc_abort")).toBe(false);
+  });
 });

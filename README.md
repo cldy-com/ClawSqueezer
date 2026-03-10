@@ -64,7 +64,7 @@ Recent content is never touched. Only stale heavy blocks get squeezed.
 - **OpenClaw >= 2026.3.7** (ContextEngine plugin slot)
 - **Node.js >= 20**
 
-The plugin checks the OpenClaw version at startup and disables itself if the version is too old.
+Make sure your OpenClaw version meets this requirement before enabling the plugin.
 
 ## Installation
 

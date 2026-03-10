@@ -8,9 +8,6 @@
  * 2. Every tool_result has a matching tool_use (drops orphans)
  * 3. No duplicate tool_results for the same id
  * 4. tool_results are positioned after their matching tool_use
- *
- * Inspired by lossless-claw's transcript-repair.ts.
- * Simplified for ClawSqueezer's needs — we don't reorder, just validate and fix.
  */
 
 interface MessageLike {
@@ -78,6 +75,10 @@ function makeSyntheticResult(callId: string, toolName?: string): MessageLike {
   };
 }
 
+function isAssistantAborted(msg: MessageLike): boolean {
+  return msg.stopReason === "error" || msg.stopReason === "aborted";
+}
+
 export interface RepairStats {
   syntheticResultsInserted: number;
   orphanResultsDropped: number;
@@ -100,86 +101,93 @@ export function repairToolPairing<T extends MessageLike>(messages: T[]): {
     repaired: false,
   };
 
-  // Phase 1: Collect all tool call ids from assistant messages
+  // Phase 1: collect all non-aborted tool calls (the only valid result anchors)
   const allCallIds = new Map<string, string | undefined>(); // id → toolName
+  const callOrder: string[] = [];
   for (const msg of messages) {
-    if (msg.role !== "assistant") continue;
+    if (msg.role !== "assistant" || isAssistantAborted(msg)) continue;
     for (const call of extractToolCalls(msg)) {
+      if (!allCallIds.has(call.id)) callOrder.push(call.id);
       allCallIds.set(call.id, call.name);
     }
   }
 
-  // If no tool calls, still check for orphan toolResults
-  // (toolResults with no matching tool call should be dropped)
-
-  // Phase 2: Collect all existing tool result ids
-  const existingResultIds = new Set<string>();
-  for (const msg of messages) {
-    if (msg.role !== "toolResult") continue;
-    const id = getResultId(msg);
-    if (id) existingResultIds.add(id);
+  // Fast-path: no tool calls and no tool results => unchanged
+  const hasToolResults = messages.some((m) => m.role === "toolResult");
+  if (allCallIds.size === 0 && !hasToolResults) {
+    return { messages, stats };
   }
 
-  // Phase 3: Build repaired output
+  // Phase 2: stream messages and ensure results never appear before calls.
+  // Keep early results in pending, flush them right after their call.
+  const seenCallIds = new Set<string>();
   const seenResultIds = new Set<string>();
+  const pendingResults = new Map<string, T>();
   const out: T[] = [];
 
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-
-    // Handle toolResult messages — check for orphans, duplicates
+  for (const msg of messages) {
     if (msg.role === "toolResult") {
       const id = getResultId(msg);
 
-      // Orphan — no matching tool call anywhere in the transcript
+      // Orphan — no matching non-aborted tool call in transcript
       if (!id || !allCallIds.has(id)) {
         stats.orphanResultsDropped++;
         continue;
       }
 
-      // Duplicate — already seen this id
-      if (seenResultIds.has(id)) {
+      // Duplicate — already emitted or already pending for same id
+      if (seenResultIds.has(id) || pendingResults.has(id)) {
         stats.duplicateResultsDropped++;
         continue;
       }
 
-      seenResultIds.add(id);
-      out.push(msg);
-      continue;
-    }
-
-    // For assistant messages with tool calls, ensure all results exist
-    if (msg.role === "assistant") {
-      // Skip aborted/errored messages
-      if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+      // If call already seen, keep it in place; otherwise defer until call appears.
+      if (seenCallIds.has(id)) {
         out.push(msg);
-        continue;
-      }
-
-      const calls = extractToolCalls(msg);
-      out.push(msg);
-
-      if (calls.length > 0) {
-        // Check which calls are missing results
-        for (const call of calls) {
-          if (!existingResultIds.has(call.id)) {
-            // Insert synthetic result
-            const synthetic = makeSyntheticResult(call.id, call.name);
-            out.push(synthetic as T);
-            seenResultIds.add(call.id);
-            stats.syntheticResultsInserted++;
-          }
-        }
+        seenResultIds.add(id);
+      } else {
+        pendingResults.set(id, msg);
       }
       continue;
     }
 
     out.push(msg);
+
+    if (msg.role === "assistant" && !isAssistantAborted(msg)) {
+      for (const call of extractToolCalls(msg)) {
+        seenCallIds.add(call.id);
+
+        // Flush out-of-order result immediately after matching tool call
+        const pending = pendingResults.get(call.id);
+        if (pending && !seenResultIds.has(call.id)) {
+          out.push(pending);
+          seenResultIds.add(call.id);
+          pendingResults.delete(call.id);
+        }
+      }
+    }
+  }
+
+  // Phase 3: insert synthetic results for calls that still have none.
+  for (const callId of callOrder) {
+    if (!seenResultIds.has(callId)) {
+      out.push(makeSyntheticResult(callId, allCallIds.get(callId)) as T);
+      seenResultIds.add(callId);
+      stats.syntheticResultsInserted++;
+    }
+  }
+
+  // Any pending result left means the referenced call never appeared in stream ordering.
+  // Drop as orphan to keep transcript valid and deterministic.
+  if (pendingResults.size > 0) {
+    stats.orphanResultsDropped += pendingResults.size;
   }
 
   stats.repaired = stats.syntheticResultsInserted > 0
     || stats.orphanResultsDropped > 0
-    || stats.duplicateResultsDropped > 0;
+    || stats.duplicateResultsDropped > 0
+    || out.length !== messages.length
+    || out.some((m, i) => m !== messages[i]);
 
   return {
     messages: stats.repaired ? out : messages,
