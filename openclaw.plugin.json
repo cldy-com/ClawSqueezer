@@ -1,0 +1,43 @@
+{
+  "id": "clawsqueezer",
+  "name": "ClawSqueezer",
+  "kind": "context-engine",
+  "version": "1.0.0",
+  "description": "🍋 Stale content eviction — squeeze images, tool results, and exec outputs from context",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "staleTurns": {
+        "type": "number",
+        "default": 4,
+        "minimum": 1,
+        "description": "Turns before content becomes eligible for eviction"
+      },
+      "minTokensToSqueeze": {
+        "type": "number",
+        "default": 200,
+        "minimum": 50,
+        "description": "Minimum token size to consider for eviction"
+      },
+      "keepPreviewChars": {
+        "type": "number",
+        "default": 200,
+        "minimum": 0,
+        "description": "Characters of preview to keep from evicted content"
+      },
+      "imageAgeTurns": {
+        "type": "number",
+        "default": 2,
+        "minimum": 1,
+        "description": "Turns before images are evicted (lower = more aggressive)"
+      }
+    }
+  },
+  "uiHints": {
+    "staleTurns": { "label": "Stale Turns", "placeholder": "4" },
+    "minTokensToSqueeze": { "label": "Min Tokens to Squeeze", "placeholder": "200" },
+    "keepPreviewChars": { "label": "Preview Characters", "placeholder": "200" },
+    "imageAgeTurns": { "label": "Image Age Turns", "placeholder": "2" }
+  }
+}
