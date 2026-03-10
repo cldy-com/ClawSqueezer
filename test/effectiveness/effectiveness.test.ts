@@ -27,27 +27,67 @@ interface ModelConfig {
   baseUrl: string;
 }
 
+/**
+ * Configure models via environment variables:
+ *
+ * Direct API keys:
+ *   ANTHROPIC_API_KEY=sk-ant-...
+ *   OPENAI_API_KEY=sk-...
+ *
+ * Custom/LiteLLM endpoint (OpenAI-compatible):
+ *   TEST_API_KEY=your-key
+ *   TEST_BASE_URL=http://localhost:4001    (default: https://api.openai.com)
+ *   TEST_MODEL=cldy-chat-pro              (default: gpt-4o)
+ *   TEST_NAME=LiteLLM                     (default: Custom)
+ *
+ * Multiple custom endpoints (comma-separated):
+ *   TEST_MODELS=cldy-chat-pro,cldy-chat-master
+ *   (uses same TEST_API_KEY and TEST_BASE_URL for all)
+ */
 function getModels(): ModelConfig[] {
   const models: ModelConfig[] = [];
 
+  // Anthropic direct
   if (process.env.ANTHROPIC_API_KEY) {
     models.push({
       name: "Claude Sonnet",
       provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
+      model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-20250514",
       apiKey: process.env.ANTHROPIC_API_KEY,
-      baseUrl: "https://api.anthropic.com",
+      baseUrl: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
     });
   }
 
-  if (process.env.OPENAI_API_KEY) {
+  // OpenAI direct
+  if (process.env.OPENAI_API_KEY && !process.env.TEST_API_KEY) {
     models.push({
       name: "GPT-4o",
       provider: "openai",
-      model: "gpt-4o",
+      model: process.env.OPENAI_MODEL ?? "gpt-4o",
       apiKey: process.env.OPENAI_API_KEY,
-      baseUrl: "https://api.openai.com",
+      baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com",
     });
+  }
+
+  // Custom / LiteLLM / any OpenAI-compatible endpoint
+  if (process.env.TEST_API_KEY) {
+    const baseUrl = process.env.TEST_BASE_URL ?? "https://api.openai.com";
+    const key = process.env.TEST_API_KEY;
+    const namePrefix = process.env.TEST_NAME ?? "Custom";
+
+    const modelList = process.env.TEST_MODELS
+      ? process.env.TEST_MODELS.split(",").map((m) => m.trim())
+      : [process.env.TEST_MODEL ?? "gpt-4o"];
+
+    for (const model of modelList) {
+      models.push({
+        name: modelList.length > 1 ? `${namePrefix}/${model}` : namePrefix,
+        provider: "openai", // OpenAI-compatible format
+        model,
+        apiKey: key,
+        baseUrl,
+      });
+    }
   }
 
   return models;
