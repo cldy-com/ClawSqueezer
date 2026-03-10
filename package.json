@@ -31,7 +31,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test test/*.test.js",
+    "test": "vitest run",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
@@ -39,8 +39,9 @@
     "openclaw": ">=2026.3.7"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^5.4.0",
-    "@types/node": "^22.0.0"
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -38,7 +38,8 @@ const DEFAULT_CONFIG: SqueezerConfig = {
 interface ContentBlock {
   type: string;
   text?: string;
-  data?: string;         // base64 image data
+  data?: string;         // base64 image data (flat format)
+  source?: { type?: string; data?: string; media_type?: string }; // base64 image (Anthropic format)
   name?: string;         // tool name
   id?: string;           // tool_use id
   tool_use_id?: string;  // tool_result reference
@@ -238,8 +239,10 @@ export function squeeze(
       const actualTokens = Math.ceil(size / 4);
 
       // Image blocks — squeeze after imageAgeTurns
-      if (block.type === "image" && block.data && isImageStale) {
-        const freedTokens = Math.ceil(block.data.length / 4);
+      // Images can be { type: "image", data: "..." } or { type: "image", source: { data: "..." } }
+      const imageData = block.data ?? block.source?.data;
+      if (block.type === "image" && imageData && isImageStale) {
+        const freedTokens = Math.ceil(imageData.length / 4);
         newBlocks.push({
           type: "text",
           text: `[image was here — ${freedTokens.toLocaleString()} tokens, processed ${turnsFromEnd} turns ago]`,
