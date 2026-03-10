@@ -1,5 +1,5 @@
 {
-  "name": "clawsqueezer",
+  "name": "@cldy-com/clawsqueezer",
   "version": "1.0.0",
   "description": "🍋 Stale content eviction for OpenClaw — squeeze images, tool results, and exec outputs from context. Compaction fires 2-3x less often.",
   "main": "dist/index.js",
