@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify openclaw.extensions entrypoint exists
+        run: |
+          ENTRY=$(node -e "const p=JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log(p.openclaw?.extensions?.[0] ?? '')")
+          if [ -z "$ENTRY" ]; then echo "No openclaw.extensions found"; exit 1; fi
+          if [ ! -f "$ENTRY" ]; then echo "Entrypoint $ENTRY does not exist after build"; exit 1; fi
+          echo "✅ $ENTRY exists"
+
+      - name: Verify manifest
+        run: |
+          node -e "
+            const m = JSON.parse(require('fs').readFileSync('openclaw.plugin.json','utf8'));
+            if (!m.id) throw new Error('Missing id');
+            if (!m.configSchema) throw new Error('Missing configSchema');
+            if (!m.kind) throw new Error('Missing kind');
+            console.log('✅ Manifest OK: id=' + m.id + ' kind=' + m.kind);
+          "
+
+      - name: Run tests
+        run: node --test test/*.test.js
