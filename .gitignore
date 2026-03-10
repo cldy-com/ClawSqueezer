@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.squeezer/
+*.tgz
+.github/workflows/
