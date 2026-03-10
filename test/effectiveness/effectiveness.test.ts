@@ -12,7 +12,7 @@
  * Skip with: npx vitest run --ignore test/effectiveness/
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { squeeze } from "../../src/squeezer.js";
 import { repairToolPairing } from "../../src/repair.js";
 import { codingSession, imageSession, mixedToolSession } from "./fixtures.js";
@@ -306,6 +306,66 @@ async function callModel(config: ModelConfig, msgs: Record<string, unknown>[]) {
 
 // ── Tests ──
 
+// ── Local sanity checks (no API keys needed) ──
+
+describe("Local effectiveness sanity checks", () => {
+  it("codingSession should achieve >30% size reduction", () => {
+    const raw = codingSession(12);
+    const before = JSON.stringify(raw).length;
+    const { messages: squeezed, stats } = squeeze(raw, { staleTurns: 3, minTokensToSqueeze: 50 });
+    const { messages: repaired } = repairToolPairing(squeezed);
+    const after = JSON.stringify(repaired).length;
+    const reduction = ((before - after) / before) * 100;
+
+    console.log(`  [Local] codingSession: ${before} → ${after} chars (${reduction.toFixed(1)}% reduction)`);
+    console.log(`  [Local] Stats: ${stats.blocksEvicted} blocks, ~${stats.tokensFreed} tokens freed`);
+
+    expect(reduction).toBeGreaterThan(30);
+    expect(stats.blocksEvicted).toBeGreaterThan(0);
+  });
+
+  it("imageSession should evict images and achieve size reduction", () => {
+    const raw = imageSession();
+    const before = JSON.stringify(raw).length;
+    const { messages: squeezed, stats } = squeeze(raw, { staleTurns: 2, imageAgeTurns: 1 });
+    const after = JSON.stringify(squeezed).length;
+    const reduction = ((before - after) / before) * 100;
+
+    console.log(`  [Local] imageSession: ${before} → ${after} chars (${reduction.toFixed(1)}% reduction)`);
+    console.log(`  [Local] Images evicted: ${stats.imagesEvicted}`);
+
+    expect(stats.imagesEvicted).toBeGreaterThan(0);
+    expect(reduction).toBeGreaterThan(50); // images are huge, expect big savings
+  });
+
+  it("mixedToolSession should squeeze stale tool outputs", () => {
+    const raw = mixedToolSession();
+    const before = JSON.stringify(raw).length;
+    const { messages: squeezed, stats } = squeeze(raw, { staleTurns: 3, minTokensToSqueeze: 50 });
+    const after = JSON.stringify(squeezed).length;
+    const reduction = ((before - after) / before) * 100;
+
+    console.log(`  [Local] mixedToolSession: ${before} → ${after} chars (${reduction.toFixed(1)}% reduction)`);
+    console.log(`  [Local] Stats: toolResults=${stats.toolResultsEvicted}, toolCalls=${stats.toolCallsEvicted}`);
+
+    expect(stats.toolResultsEvicted).toBeGreaterThan(0);
+    expect(reduction).toBeGreaterThan(10);
+  });
+
+  it("repair should not break valid squeezed transcripts", () => {
+    const raw = codingSession(12);
+    const { messages: squeezed } = squeeze(raw, { staleTurns: 3, minTokensToSqueeze: 50 });
+    const { messages: repaired, stats } = repairToolPairing(squeezed);
+
+    // A well-squeezed transcript shouldn't need repair
+    expect(stats.orphanResultsDropped).toBe(0);
+    expect(stats.duplicateResultsDropped).toBe(0);
+    expect(repaired.length).toBe(squeezed.length);
+  });
+});
+
+// ── API tests (requires keys) ──
+
 const models = getModels();
 
 describe.skipIf(models.length === 0)("Effectiveness tests", () => {
@@ -328,9 +388,20 @@ describe.skipIf(models.length === 0)("Effectiveness tests", () => {
 
       it("should accept a squeezed image session", async () => {
         const raw = imageSession();
-        const { messages: squeezed } = squeeze(raw, { staleTurns: 2, imageAgeTurns: 1 });
-        const { messages: repaired } = repairToolPairing(squeezed);
+        const { messages: squeezed, stats } = squeeze(raw, { staleTurns: 2, imageAgeTurns: 1 });
 
+        // Verify images were actually squeezed (prevents false-pass if squeeze regresses)
+        expect(stats.imagesEvicted, "Image squeeze should have evicted at least 1 image").toBeGreaterThan(0);
+
+        // Verify placeholder exists in squeezed output
+        const hasPlaceholder = squeezed.some((m) =>
+          Array.isArray(m.content) && (m.content as any[]).some((b) =>
+            b.type === "text" && typeof b.text === "string" && b.text.includes("[image was here"),
+          ),
+        );
+        expect(hasPlaceholder, "Squeezed output should contain image placeholder").toBe(true);
+
+        const { messages: repaired } = repairToolPairing(squeezed);
         repaired.push({ role: "user", content: "What error did I show you earlier?" } as any);
 
         const result = await callModel(model, repaired as any);
