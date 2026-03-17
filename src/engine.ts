@@ -74,11 +74,14 @@ export class ClawSqueezer implements ContextEngine {
       ? ` | repair: +${repairStats.syntheticResultsInserted} synthetic, -${repairStats.orphanResultsDropped} orphans, -${repairStats.duplicateResultsDropped} dupes`
       : "";
 
+    const heartbeatInfo = stats.heartbeatsPruned > 0 ? `, ${stats.heartbeatsPruned} heartbeats pruned` : "";
+    const largeInfo = stats.largeResultsTruncated > 0 ? `, ${stats.largeResultsTruncated} large results truncated` : "";
+
     console.log(
       `[ClawSqueezer] squeezed: ${stats.blocksEvicted} blocks, ` +
       `~${stats.tokensFreed.toLocaleString()} tokens freed ` +
       `(${stats.imagesEvicted} images, ${stats.toolResultsEvicted} toolResults, ` +
-      `${stats.toolCallsEvicted} toolCalls)${repairInfo}`,
+      `${stats.toolCallsEvicted} toolCalls${heartbeatInfo}${largeInfo})${repairInfo}`,
     );
 
     return {

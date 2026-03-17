@@ -26,6 +26,12 @@ export interface SqueezerConfig {
   keepPreviewChars: number;
   /** Squeeze images after this many turns (default: 2, they're huge) */
   imageAgeTurns: number;
+  /** Remove HEARTBEAT_OK turn pairs from context (default: true) */
+  pruneHeartbeats: boolean;
+  /** Truncate tool results larger than this many chars (default: 50000). 0 = disabled. */
+  largeResultThreshold: number;
+  /** Preview chars to keep when truncating large results (default: 500) */
+  largeResultPreviewChars: number;
 }
 
 const DEFAULT_CONFIG: SqueezerConfig = {
@@ -33,6 +39,9 @@ const DEFAULT_CONFIG: SqueezerConfig = {
   minTokensToSqueeze: 200,
   keepPreviewChars: 200,
   imageAgeTurns: 2,
+  pruneHeartbeats: true,
+  largeResultThreshold: 50000,
+  largeResultPreviewChars: 500,
 };
 
 interface ContentBlock {
@@ -147,17 +156,116 @@ export function squeeze(
     imagesEvicted: 0,
     toolResultsEvicted: 0,
     toolCallsEvicted: 0,
+    heartbeatsPruned: 0,
+    largeResultsTruncated: 0,
   };
+
+  // --- Phase 0: Heartbeat pruning ---
+  // Remove HEARTBEAT_OK turn pairs — they carry zero information.
+  // A heartbeat pair = user message containing heartbeat prompt + assistant "HEARTBEAT_OK" reply.
+  let preprocessed = [...messages];
+  if (cfg.pruneHeartbeats) {
+    const filtered: AgentMessage[] = [];
+    for (let i = 0; i < preprocessed.length; i++) {
+      const msg = preprocessed[i];
+      const content = typeof msg.content === "string" ? msg.content : "";
+
+      // Check if this is a HEARTBEAT_OK assistant reply
+      if (msg.role === "assistant" && /^\s*HEARTBEAT_OK\s*$/i.test(content)) {
+        // Also remove the preceding user heartbeat message
+        if (filtered.length > 0 && filtered[filtered.length - 1].role === "user") {
+          const prevContent = typeof filtered[filtered.length - 1].content === "string"
+            ? (filtered[filtered.length - 1].content as string) : "";
+          if (prevContent.includes("HEARTBEAT") || prevContent.includes("heartbeat")) {
+            const freedTokens = estimateTokens(prevContent) + estimateTokens(content);
+            filtered.pop(); // remove user heartbeat
+            stats.heartbeatsPruned++;
+            stats.tokensFreed += freedTokens;
+            continue; // skip assistant HEARTBEAT_OK
+          }
+        }
+        // No preceding heartbeat user msg found — still skip the OK reply
+        stats.heartbeatsPruned++;
+        stats.tokensFreed += estimateTokens(content);
+        continue;
+      }
+      filtered.push(msg);
+    }
+    preprocessed = filtered;
+  }
+
+  // --- Phase 0b: Large result truncation ---
+  // Truncate any single tool result exceeding largeResultThreshold, regardless of age.
+  // This prevents one huge file read from dominating the entire context.
+  if (cfg.largeResultThreshold > 0) {
+    preprocessed = preprocessed.map((msg) => {
+      // Handle toolResult role messages
+      if (msg.role === "toolResult" && Array.isArray(msg.content)) {
+        const totalSize = msg.content.reduce((sum: number, b: any) => sum + (JSON.stringify(b).length || 0), 0);
+        if (totalSize > cfg.largeResultThreshold) {
+          const firstText = msg.content.find((b: any) => typeof b === "object" && b?.type === "text");
+          const preview = firstText?.text?.slice(0, cfg.largeResultPreviewChars) || JSON.stringify(msg.content).slice(0, cfg.largeResultPreviewChars);
+          const freedTokens = estimateTokens(JSON.stringify(msg.content)) - estimateTokens(preview);
+          stats.largeResultsTruncated++;
+          stats.blocksEvicted++;
+          stats.tokensFreed += Math.max(0, freedTokens);
+          return {
+            ...msg,
+            content: [{
+              type: "text",
+              text: `[large result truncated — was ${totalSize.toLocaleString()} chars, ~${Math.ceil(totalSize / 4).toLocaleString()} tokens]\nPreview: ${preview}`,
+            }],
+          };
+        }
+      }
+      // Handle string content tool results
+      if (msg.role === "toolResult" && typeof msg.content === "string" && msg.content.length > cfg.largeResultThreshold) {
+        const preview = msg.content.slice(0, cfg.largeResultPreviewChars);
+        const freedTokens = estimateTokens(msg.content) - estimateTokens(preview);
+        stats.largeResultsTruncated++;
+        stats.blocksEvicted++;
+        stats.tokensFreed += Math.max(0, freedTokens);
+        return {
+          ...msg,
+          content: `[large result truncated — was ${msg.content.length.toLocaleString()} chars]\nPreview: ${preview}`,
+        };
+      }
+      // Handle array content blocks with individual large blocks
+      if (Array.isArray(msg.content)) {
+        let modified = false;
+        const newBlocks = (msg.content as ContentBlock[]).map((block) => {
+          if (block.type === "tool_result" && block.content) {
+            const size = typeof block.content === "string" ? block.content.length : JSON.stringify(block.content).length;
+            if (size > cfg.largeResultThreshold) {
+              const preview = typeof block.content === "string"
+                ? block.content.slice(0, cfg.largeResultPreviewChars)
+                : JSON.stringify(block.content).slice(0, cfg.largeResultPreviewChars);
+              stats.largeResultsTruncated++;
+              stats.blocksEvicted++;
+              stats.tokensFreed += Math.max(0, estimateTokens(String(block.content)) - estimateTokens(preview));
+              modified = true;
+              return { ...block, content: `[large result truncated — was ${size.toLocaleString()} chars]\nPreview: ${preview}` };
+            }
+          }
+          return block;
+        });
+        if (modified) return { ...msg, content: newBlocks };
+      }
+      return msg;
+    });
+  }
+
+  const messages_to_process = preprocessed;
 
   // Build turn map: assign a "turns from end" value to each message index.
   // A "turn" = one user message + all subsequent assistant/tool messages until the next user message.
   // All messages in the same turn get the same age — fixes inconsistent aging
   // where user messages were counted as older than their paired assistant/tool messages.
-  const turnAge: number[] = new Array(messages.length).fill(0);
+  const turnAge: number[] = new Array(messages_to_process.length).fill(0);
   let totalUserTurns = 0;
   const userIndices: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === "user") {
+  for (let i = 0; i < messages_to_process.length; i++) {
+    if (messages_to_process[i].role === "user") {
       userIndices.push(i);
       totalUserTurns++;
     }
@@ -183,8 +291,8 @@ export function squeeze(
   // Process each message
   const result: AgentMessage[] = [];
 
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
+  for (let i = 0; i < messages_to_process.length; i++) {
+    const msg = messages_to_process[i];
 
     // turnsFromEnd: how many user turns ago this message was
     const turnsFromEnd = turnAge[i];
@@ -314,4 +422,6 @@ export interface SqueezeStats {
   imagesEvicted: number;
   toolResultsEvicted: number;
   toolCallsEvicted: number;
+  heartbeatsPruned: number;
+  largeResultsTruncated: number;
 }

@@ -19,6 +19,9 @@ const configSchema = {
     minTokensToSqueeze: { type: "number" as const, default: 200, minimum: 50 },
     keepPreviewChars: { type: "number" as const, default: 200, minimum: 0 },
     imageAgeTurns: { type: "number" as const, default: 2, minimum: 1 },
+    pruneHeartbeats: { type: "boolean" as const, default: true },
+    largeResultThreshold: { type: "number" as const, default: 50000, minimum: 0 },
+    largeResultPreviewChars: { type: "number" as const, default: 500, minimum: 0 },
   },
 };
 
